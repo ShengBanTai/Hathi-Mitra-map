@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Hathi Mitra Live Map</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; font-family: 'Segoe UI', sans-serif; }
+        #map { height: 100%; width: 100%; }
+
+        /* Floating Status Panel */
+        .status-panel {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: white;
+            padding: 10px 20px;
+            border-radius: 30px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            text-align: center;
+            width: 85%;
+            max-width: 320px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        
+        .status-safe { border-left: 10px solid #2ecc71; color: #27ae60; }
+        .status-danger { border-left: 10px solid #e74c3c; color: #c0392b; animation: pulse 1s infinite; }
+        .status-title { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+        .status-msg { font-size: 18px; display: block; margin-top: 2px; }
+
+        /* Controls Container (Bottom Right) */
+        .controls-container {
+            position: absolute;
+            bottom: 30px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            z-index: 1000;
+        }
+
+        /* Common Button Style */
+        .map-btn {
+            background-color: white;
+            padding: 12px 20px;
+            border-radius: 50px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            font-weight: bold;
+            color: #333;
+            cursor: pointer;
+            border: 2px solid white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+
+        /* Driving Mode Active State */
+        .drive-active {
+            background-color: #4285F4; /* Google Blue */
+            color: white;
+            border-color: #4285F4;
+            box-shadow: 0 0 15px rgba(66, 133, 244, 0.5);
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 30px;
+            left: 10px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .legend-item { margin-bottom: 5px; display: flex; align-items: center; }
+        .legend-icon { margin-right: 8px; font-size: 16px; }
+
+        @keyframes pulse {
+            0% { transform: translateX(-50%) scale(1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+            70% { transform: translateX(-50%) scale(1.05); box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
+            100% { transform: translateX(-50%) scale(1); box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+        }
+
+        .emoji-icon {
+            font-size: 24px;
+            text-align: center;
+            line-height: 1;
+            text-shadow: 2px 2px 2px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="statusBox" class="status-panel status-safe">
+        <span class="status-title">System Status</span>
+        <span id="statusText" class="status-msg">Initializing GPS...</span>
+    </div>
+
+    <div id="map"></div>
+
+    <div class="controls-container">
+        <div id="driveBtn" class="map-btn" onclick="toggleDrivingMode()">
+            🚗 Drive Mode: OFF
+        </div>
+        <div class="map-btn" onclick="recenterMap()">
+            📍 Recenter
+        </div>
+    </div>
+
+    <div class="legend">
+        <div class="legend-item"><span class="legend-icon">🛑</span> Danger Zone</div>
+        <div class="legend-item"><span class="legend-icon">🏥</span> Hospital</div>
+        <div class="legend-item"><span class="legend-icon">🚓</span> Police</div>
+        <div class="legend-item"><span class="legend-icon">🌲</span> Forest Dept</div>
+        <div class="legend-item"><span class="legend-icon">🔵</span> You</div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // --- CONFIGURATION ---
+        let isDrivingMode = false; // State variable for driving mode
+        let currentPos = null;     // Store latest position
+        
+        // --- DATA ---
+        // MODIFY THESE LAT/LNGs TO YOUR DEMO LOCATION
+        const dangerZones = [
+            { name: "Chamundi Foot", lat: 12.2750, lng: 76.6700, radius: 800 },
+            { name: "KRS Backwaters", lat: 12.3500, lng: 76.5500, radius: 1200 },
+            { name: "Kabini Buffer", lat: 12.2500, lng: 76.6000, radius: 600 }
+        ];
+
+        const pois = [
+            { type: "hospital", name: "Apollo Hospital", lat: 12.3020, lng: 76.6400, icon: "🏥" },
+            { type: "hospital", name: "JSS Hospital", lat: 12.2950, lng: 76.6550, icon: "🏥" },
+            { type: "police", name: "Lashkar Police Stn", lat: 12.3150, lng: 76.6580, icon: "🚓" },
+            { type: "forest", name: "Aranya Bhavan", lat: 12.2850, lng: 76.6250, icon: "🌲" }
+        ];
+
+        // --- MAP INIT ---
+        const map = L.map('map', { zoomControl: false }).setView([12.2958, 76.6394], 13);
+        
+        // Add OpenStreetMap
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        // --- DRAW ELEMENTS ---
+        dangerZones.forEach(zone => {
+            L.circle([zone.lat, zone.lng], {
+                color: 'red',
+                fillColor: '#f03',
+                fillOpacity: 0.3,
+                radius: zone.radius
+            }).addTo(map).bindPopup(`<b>⚠️ DANGER ZONE</b><br>${zone.name}`);
+        });
+
+        pois.forEach(poi => {
+            const icon = L.divIcon({
+                className: 'emoji-icon',
+                html: poi.icon,
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            });
+            L.marker([poi.lat, poi.lng], { icon: icon })
+                .addTo(map)
+                .bindPopup(`<b>${poi.name}</b><br>${poi.type.toUpperCase()}`);
+        });
+
+        let userMarker = null;
+        let userCircle = null;
+
+        // --- FUNCTIONS ---
+
+        function toggleDrivingMode() {
+            isDrivingMode = !isDrivingMode; // Toggle state
+            const btn = document.getElementById('driveBtn');
+            
+            if (isDrivingMode) {
+                btn.className = "map-btn drive-active";
+                btn.innerHTML = "🚗 Drive Mode: ON";
+                // If we have a location, immediately zoom in
+                if (currentPos) {
+                    map.flyTo([currentPos.lat, currentPos.lng], 18, { animate: true, duration: 1 });
+                }
+            } else {
+                btn.className = "map-btn";
+                btn.innerHTML = "🚗 Drive Mode: OFF";
+                // Zoom out slightly when stopping drive mode
+                if (currentPos) {
+                    map.flyTo([currentPos.lat, currentPos.lng], 15);
+                }
+            }
+        }
+
+        function recenterMap() {
+            if (currentPos) {
+                map.flyTo([currentPos.lat, currentPos.lng], isDrivingMode ? 18 : 15);
+            } else {
+                alert("Waiting for GPS signal...");
+            }
+        }
+
+        // Haversine Distance
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; 
+            const φ1 = lat1 * Math.PI/180;
+            const φ2 = lat2 * Math.PI/180;
+            const Δφ = (lat2-lat1) * Math.PI/180;
+            const Δλ = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+                      Math.cos(φ1) * Math.cos(φ2) *
+                      Math.sin(Δλ/2) * Math.sin(Δλ/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c;
+        }
+
+        // --- CORE TRACKING LOOP ---
+        function updateStatus(position) {
+            const userLat = position.coords.latitude;
+            const userLng = position.coords.longitude;
+            const accuracy = position.coords.accuracy;
+            
+            // Store for buttons to use
+            currentPos = { lat: userLat, lng: userLng };
+
+            // 1. Update Marker
+            if (!userMarker) {
+                userMarker = L.marker([userLat, userLng]).addTo(map).bindPopup("You").openPopup();
+                userCircle = L.circle([userLat, userLng], { radius: accuracy }).addTo(map);
+                // First load: zoom to user
+                map.setView([userLat, userLng], 15);
+            } else {
+                userMarker.setLatLng([userLat, userLng]);
+                userCircle.setLatLng([userLat, userLng]);
+                userCircle.setRadius(accuracy);
+            }
+
+            // 2. DRIVING MODE LOGIC (The Magic Part)
+            if (isDrivingMode) {
+                // If driving, lock camera to user and zoom to 18
+                map.flyTo([userLat, userLng], 18, { 
+                    animate: true, 
+                    duration: 0.5 // Quick, smooth follow
+                });
+            }
+
+            // 3. Danger Check
+            let inDanger = false;
+            let nearbyZone = "";
+
+            for (let zone of dangerZones) {
+                const dist = getDistance(userLat, userLng, zone.lat, zone.lng);
+                if (dist < zone.radius) {
+                    inDanger = true;
+                    nearbyZone = zone.name;
+                    break;
+                }
+            }
+
+            // 4. Update UI
+            const statusBox = document.getElementById('statusBox');
+            const statusText = document.getElementById('statusText');
+
+            if (inDanger) {
+                statusBox.className = "status-panel status-danger";
+                statusText.innerHTML = `⚠️ INSIDE ${nearbyZone}!`;
+                if (navigator.vibrate) navigator.vibrate(200);
+            } else {
+                statusBox.className = "status-panel status-safe";
+                statusText.innerHTML = "You are in a SAFE ZONE";
+            }
+        }
+
+        function handleError(error) {
+            document.getElementById('statusText').innerHTML = "GPS Signal Lost";
+        }
+
+        if (navigator.geolocation) {
+            navigator.geolocation.watchPosition(updateStatus, handleError, {
+                enableHighAccuracy: true, timeout: 5000, maximumAge: 0
+            });
+        } else {
+            alert("Geolocation not supported.");
+        }
+    </script>
+</body>
+</html>
